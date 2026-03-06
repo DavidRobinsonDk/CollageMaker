@@ -1,0 +1,6 @@
+IDesktopWallpaper
+DesktopWallpaper
+CoCreateInstance
+GetConsoleWindow
+ShowWindow
+AllocConsole
