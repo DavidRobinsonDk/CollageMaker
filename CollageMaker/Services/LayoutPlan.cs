@@ -1,4 +1,3 @@
-using JustifiedLayout;
 using CollageMaker.Models;
 
 namespace CollageMaker.Services;
@@ -6,7 +5,7 @@ namespace CollageMaker.Services;
 internal sealed partial class CollageService
 {
     /// <summary>
-    /// Holds a layout result and its corresponding placed images.
+    /// Holds the engine-agnostic outcome of a layout pass.
     /// </summary>
-    private sealed record LayoutPlan(LayoutResult Result, IReadOnlyList<PlacedImage> Placements);
+    private sealed record LayoutPlan(double ContainerHeight, int PlacedCount, IReadOnlyList<PlacedImage> Placements);
 }

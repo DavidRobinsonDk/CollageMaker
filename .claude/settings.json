@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(C:\\Users\\dr\\source\\repos\\CollageMaker\\**)",
+      "Write(C:\\Users\\dr\\source\\repos\\CollageMaker\\**)"
+    ]
+  }
+}

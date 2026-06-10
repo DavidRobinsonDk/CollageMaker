@@ -1,4 +1,5 @@
 using JustifiedLayout;
+using CollageMaker.BentoLayout;
 using CollageMaker.Models;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats;
@@ -126,7 +127,7 @@ internal sealed partial class CollageService(
         if (!options.Output.FetchAdditionalForCoverage)
             return false;
 
-        int droppedCount = desiredCount - plan.Placements.Count;
+        int droppedCount = desiredCount - plan.PlacedCount;
         double dropRate = (double)droppedCount / desiredCount;
 
         return dropRate > MaxDropPercent/100.0;
@@ -144,7 +145,7 @@ internal sealed partial class CollageService(
         int desiredCount = options.Immich.ImageCount;
         int maxExtra = CalculateExtraImageCount(images.Count);
         int canvasHeight = options.Output.Height;
-        double bestScore = ScoreLayout(bestPlan.Result, canvasHeight, desiredCount);
+        double bestScore = ScoreLayout(bestPlan.ContainerHeight, bestPlan.PlacedCount, canvasHeight, desiredCount);
 
         LogRetryWithExtraImages(bestPlan.Placements.Count, desiredCount, maxExtra);
 
@@ -156,7 +157,7 @@ internal sealed partial class CollageService(
             LogExtraImage(img.Width, img.Height, (double)img.Width / img.Height);
 
             LayoutPlan candidate = PlanLayout(images);
-            double candidateScore = ScoreLayout(candidate.Result, canvasHeight, desiredCount);
+            double candidateScore = ScoreLayout(candidate.ContainerHeight, candidate.PlacedCount, canvasHeight, desiredCount);
 
             if (candidateScore < bestScore)
             {
@@ -181,7 +182,7 @@ internal sealed partial class CollageService(
     private static bool IsGoodEnough(LayoutPlan plan, int canvasHeight)
     {
         const double goodEnoughCoverage = 95; // 95% coverage is always good enough
-        double diff = Math.Abs(plan.Result.ContainerHeight - canvasHeight);
+        double diff = Math.Abs(plan.ContainerHeight - canvasHeight);
         return diff / canvasHeight < (goodEnoughCoverage - 5.0)/100.0;
     }
 
@@ -238,12 +239,22 @@ internal sealed partial class CollageService(
     }
 
     /// <summary>
-    /// Plans image placement within the output bounds.
-    /// Tries multiple row counts and image orderings, picks the best layout.
+    /// Plans image placement within the output bounds, dispatching to the configured engine.
     /// </summary>
     /// <param name="images">The source images.</param>
     /// <returns>The layout plan containing result and placements.</returns>
     private LayoutPlan PlanLayout(IReadOnlyList<Image<Rgba32>> images)
+    {
+        return options.Output.LayoutEngine.Equals("bento", StringComparison.OrdinalIgnoreCase)
+            ? PlanLayoutBento(images)
+            : PlanLayoutJustified(images);
+    }
+
+    /// <summary>
+    /// Plans layout using the justified (row-based) engine.
+    /// Tries multiple row counts and image orderings, picks the best layout.
+    /// </summary>
+    private LayoutPlan PlanLayoutJustified(IReadOnlyList<Image<Rgba32>> images)
     {
         var layoutItems = images
             .Select(img => LayoutItem.FromDimensions(img.Width, img.Height))
@@ -265,7 +276,7 @@ internal sealed partial class CollageService(
         foreach (var ordering in orderings)
         {
             var result = FindBestLayout(ordering.Items, canvasWidth, canvasHeight, spacing, desiredCount);
-            double score = ScoreLayout(result, canvasHeight, desiredCount);
+            double score = ScoreLayout(result.ContainerHeight, result.Boxes.Count, canvasHeight, desiredCount);
 
             LogOrderingResult(ordering.Label, result.ContainerHeight, result.Boxes.Count, score);
 
@@ -282,7 +293,40 @@ internal sealed partial class CollageService(
         LogLayoutResult(bestResult!);
 
         var placements = ConvertToPlacedImages(bestResult!.Boxes, images, bestIndexMap!);
-        return new LayoutPlan(bestResult, placements);
+        return new LayoutPlan(bestResult.ContainerHeight, bestResult.Boxes.Count, placements);
+    }
+
+    /// <summary>
+    /// Plans layout using the bento (binary-tree) engine.
+    /// Randomly searches for a tree partition that fits the fixed canvas dimensions.
+    /// </summary>
+    private LayoutPlan PlanLayoutBento(IReadOnlyList<Image<Rgba32>> images)
+    {
+        var items = images
+            .Select(img => BentoImageItem.FromDimensions(img.Width, img.Height))
+            .ToList();
+
+        var config = new BentoLayoutConfig
+        {
+            CanvasWidth = options.Output.Width,
+            CanvasHeight = options.Output.Height,
+            Spacing = options.Output.ImageSpacing,
+            MaxDropCount = (int)(images.Count * MaxDropPercent / 100.0),
+            SizeBalanceWeight = options.Output.BentoSizeBalanceWeight,
+        };
+
+        var result = BentoLayoutEngine.Calculate(items, config);
+
+        var placements = result.Placements
+            .Select(p => new PlacedImage(
+                images[p.OriginalIndex],
+                (int)Math.Round(p.Bounds.X),
+                (int)Math.Round(p.Bounds.Y),
+                (int)Math.Round(p.Bounds.Width),
+                (int)Math.Round(p.Bounds.Height)))
+            .ToList();
+
+        return new LayoutPlan(options.Output.Height, result.PlacedCount, placements);
     }
 
     /// <summary>
@@ -419,7 +463,6 @@ internal sealed partial class CollageService(
 
         LayoutResult? bestResult = null;
         double bestScore = double.MaxValue;
-        var engine = new JustifiedLayoutEngine();
 
         for (int rowCount = minCandidate; rowCount <= maxCandidate; rowCount++)
         {
@@ -427,7 +470,7 @@ internal sealed partial class CollageService(
             var config = CreateLayoutConfig(rowHeight, rowCount);
             var result = JustifiedLayoutEngine.Calculate(items, config);
 
-            double score = ScoreLayout(result, canvasHeight, desiredItemCount);
+            double score = ScoreLayout(result.ContainerHeight, result.Boxes.Count, canvasHeight, desiredItemCount);
             LogRowCountTry(rowCount, rowHeight, result.ContainerHeight, result.Boxes.Count, score);
 
             if (bestResult == null || score < bestScore)
@@ -447,9 +490,9 @@ internal sealed partial class CollageService(
     /// Dropping images adds a penalty so that when height scores are close,
     /// the layout using more of the desired images wins.
     /// </summary>
-    private static double ScoreLayout(LayoutResult result, int canvasHeight, int desiredItemCount)
+    private static double ScoreLayout(double containerHeight, int placedCount, int canvasHeight, int desiredItemCount)
     {
-        double diff = result.ContainerHeight - canvasHeight;
+        double diff = containerHeight - canvasHeight;
         double absDiff = Math.Abs(diff);
         double pct = absDiff / canvasHeight;
         var heightScore = pct switch
@@ -462,7 +505,7 @@ internal sealed partial class CollageService(
 
         // Penalize dropping images: each dropped image adds a small penalty
         // so layouts using more images win when height scores are similar
-        int droppedCount = Math.Max(0, desiredItemCount - result.Boxes.Count);
+        int droppedCount = Math.Max(0, desiredItemCount - placedCount);
         double dropPenalty = droppedCount * 5;
 
         return heightScore + dropPenalty;

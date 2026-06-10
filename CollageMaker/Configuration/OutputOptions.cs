@@ -68,4 +68,17 @@ internal sealed class OutputOptions
     /// This is useful when the program is run as a scheduled task or from another application and you don't want a console window to appear.
     /// </summary>
     public bool RunInvisibly { get; init; }
+
+    /// <summary>
+    /// Gets the layout engine to use. Valid values are "justified" (default) and "bento".
+    /// </summary>
+    public string LayoutEngine { get; init; } = "justified";
+
+    /// <summary>
+    /// Gets the size balance weight for the bento layout engine (0.0–1.0).
+    /// 0 = optimise for canvas fit only (may produce large/small image disparities).
+    /// 1 = optimise for equal image sizes only (canvas fit may suffer).
+    /// Values around 0.5 are a reasonable starting point.
+    /// </summary>
+    public double BentoSizeBalanceWeight { get; init; } = 0.0;
 }
